@@ -1,0 +1,13 @@
+{
+  "algorithm": "NSGA3_LLM",
+  "problem": "RE21",
+  "dimension": 4,
+  "run_id": 0,
+  "final_population_size": 6,
+  "n_objectives": 3,
+  "n_variables": 123,
+  "hypervolume_final": 0.0,
+  "ref_dirs_count": 66,
+  "llm_enabled": true,
+  "model_name": "deepseek-chat"
+}
