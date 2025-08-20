@@ -1,6 +1,6 @@
 import numpy as np
 import warnings
-
+import os
 from pymoo.algorithms.moo.nsga3 import NSGA3
 from pymoo.core.selection import Selection
 from pymoo.operators.crossover.gpt import GPT_interface
@@ -133,7 +133,7 @@ class NSGA3_LLM(NSGA3):
         # 手动进行selection获取父代索引
         parents = self.mating.selection.do(self.problem, self.pop, n_individuals, n_parents, to_pop=False)
         print(f"Parents matrix shape: {parents.shape}")
-        print("Sample parent indices:", parents[:2])  # 打印前两个父代组合
+        print("Sample parent indices:", parents[:2])
 
         # 限制处理的个体数量，避免索引越界
         max_individuals = min(10, len(parents))
@@ -150,10 +150,10 @@ class NSGA3_LLM(NSGA3):
                 obj_values = self.pop[parent_idx].F
                 parent_group.append([np.sum(obj_values)])
             Y.append(parent_group)
-            if i < 2:  # 打印前两个Y样本
+            if i < 2:
                 print(f"Y[{i}]: {parent_group}")
 
-        # 准备parents_obj参数
+                # 准备parents_obj参数
         from pymoo.core.population import Population
         selected_individuals = []
         print("\n[Parent Objects Selection]")
@@ -161,7 +161,7 @@ class NSGA3_LLM(NSGA3):
             for j in range(n_parents):
                 parent_idx = int(parents[i, j])
                 selected_individuals.append(self.pop[parent_idx])
-                if i < 2 and j < n_parents:  # 打印前两个父代对象信息
+                if i < 2 and j < n_parents:
                     print(f"Parent[{i},{j}] X: {self.pop[parent_idx].X[:5]}... F: {self.pop[parent_idx].F}")
 
         parents_obj = [Population.create(*selected_individuals)]
@@ -177,30 +177,95 @@ class NSGA3_LLM(NSGA3):
                 parent_idx = int(parents[i, j])
                 parent_group.append(self.pop[parent_idx])
             parents_pop.append(parent_group)
-            if i < 2:  # 打印前两个父代组
+            if i < 2:
                 print(f"Parent group {i}: Indices {parents[i]}")
 
-        # 交叉操作前打印关键参数
+                # 交叉操作前打印关键参数
         print("\n[Before Crossover]")
         print(f"parents_pop length: {len(parents_pop)}")
         print(f"Y length: {len(Y)}")
         print(f"parents_obj type: {type(parents_obj)}")
         print(f"parents_obj[0] size: {len(parents_obj[0]) if parents_obj else 0}")
 
+        # ===== 关键修改：临时调整 n_offsprings =====
+        original_n_offsprings = self.n_offsprings
+        original_crossover_n_offsprings = self.mating.crossover.n_offsprings
+
+        # 临时设置为实际处理的个体数量
+        self.n_offsprings = max_individuals
+        self.mating.crossover.n_offsprings = 2  # GPT交叉算子每次产生2个子代
+
+        print(f"\n[Temporary Settings]")
+        print(f"Temporary n_offsprings: {self.n_offsprings}")
+        print(f"Temporary crossover n_offsprings: {self.mating.crossover.n_offsprings}")
+
         # 直接调用crossover
         print("\n[Crossover Call]")
-        offspring = self.mating.crossover.do(
-            problem=self.problem,
-            pop=parents_pop[:max_individuals],
-            Y=Y,
-            debug_mode=self.debug_mode,
-            model_LLM=self.model_LLM,
-            endpoint=self.endpoint,
-            key=self.key,
-            out_filename=self.out_file,
-            parents_obj=parents_obj
-        )
+        offspring_list = []
 
+        # 逐个处理每个父代组合
+        for i in range(max_individuals):
+            try:
+                # 为每个父代组合单独调用交叉算子
+                single_offspring = self.mating.crossover.do(
+                    problem=self.problem,
+                    pop=[parents_pop[i]],  # 单个父代组合
+                    Y=[Y[i]],  # 对应的Y值
+                    debug_mode=self.debug_mode,
+                    model_LLM=self.model_LLM,
+                    endpoint=self.endpoint,
+                    key=self.key,
+                    out_filename=self.out_file,
+                    parents_obj=parents_obj
+                )
+
+                # 从返回的子代中选择一个
+                if isinstance(single_offspring, Population) and len(single_offspring) > 0:
+                    offspring_list.append(single_offspring[0])
+                elif isinstance(single_offspring, np.ndarray) and single_offspring.shape[0] > 0:
+                    # 如果返回的是数组，转换为Population
+                    from pymoo.core.population import Individual
+                    ind = Individual(X=single_offspring[0])
+                    offspring_list.append(ind)
+
+            except Exception as e:
+                print(f"Error in crossover for individual {i}: {e}")
+                # 使用父代作为备选
+                offspring_list.append(parents_pop[i][0])
+
+                # 恢复原始设置
+        self.n_offsprings = original_n_offsprings
+        self.mating.crossover.n_offsprings = original_crossover_n_offsprings
+
+        # 创建最终的子代种群
+        if offspring_list:
+            offspring = Population.create(*offspring_list)
+        else:
+            # 如果没有生成任何子代，使用父代
+            offspring = Population.create(*[parents_pop[i][0] for i in range(max_individuals)])
+
+            # 交叉后立即打印输出
+        print("\n[After Crossover]")
+        print(f"Offspring type: {type(offspring)}")
+        if isinstance(offspring, Population):
+            print(f"Offspring size: {len(offspring)}")
+            if len(offspring) > 0:
+                print(f"Sample offspring X shape: {offspring[0].X.shape}")
+
+                # 应用mutation
+        print("\n[Mutation Phase]")
+        offspring = self.mating.mutation.do(self.problem, offspring)
+
+        # 最终输出检查
+        print("\n[Final Offspring Check]")
+        if isinstance(offspring, Population):
+            print(f"Final offspring count: {len(offspring)}")
+            if len(offspring) > 0:
+                print(f"First offspring X: {offspring[0].X[:5]}...")
+
+        print("=== DEBUG INFO END ===\n")
+
+        return offspring
         # 交叉后立即打印输出
         print("\n[After Crossover]")
         print(f"Offspring type: {type(offspring)}")
@@ -228,7 +293,34 @@ class NSGA3_LLM(NSGA3):
 
         print("=== DEBUG INFO END ===\n")
 
+        # 添加输出跟踪
+        if not hasattr(self, 'generation_data'):
+            self.generation_data = []
+            self.llm_stats = {'calls': 0, 'successes': 0, 'failures': 0}
+
+            # 在交叉操作后记录数据
+        generation_info = {
+            'generation': getattr(self, 'n_gen', 0),
+            'offspring_count': len(offspring) if isinstance(offspring, Population) else 0,
+            'llm_calls': max_individuals,
+            'successful_crossovers': len(offspring_list) if 'offspring_list' in locals() else 0
+        }
+        self.generation_data.append(generation_info)
+
         return offspring
+
+    def save_generation_data(self, output_dir):
+        """保存每代的详细数据"""
+        import pandas as pd
+
+        # 保存每代统计信息
+        df = pd.DataFrame(self.generation_data)
+        df.to_csv(os.path.join(output_dir, 'generation_stats.csv'), index=False)
+
+        # 保存参考方向信息
+        if hasattr(self, 'ref_dirs'):
+            ref_df = pd.DataFrame(self.ref_dirs, columns=[f'obj_{i}' for i in range(self.ref_dirs.shape[1])])
+            ref_df.to_csv(os.path.join(output_dir, 'reference_directions.csv'), index=False)
 
     def _set_optimum(self, **kwargs):
         """

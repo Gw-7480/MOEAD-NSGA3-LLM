@@ -348,8 +348,15 @@ class GPT(Crossover):  # 定义GPT类，继承自pymoo的Crossover基类
                 off1 = off1[np.newaxis, :]
                 off2 = off2[np.newaxis, :]
                 off = np.concatenate([off1, off2], axis=0)
-                off = off[:, np.newaxis, :]  # shape: (2, 1, n_var)
                 print(off)
+                # 检查期望的形状
+                expected_shape = (self.n_offsprings, 1, len(off1[0]))
+                if off.shape != expected_shape:
+                    # 调整形状以匹配期望
+                    off = off[:, np.newaxis, :]
+
+                print(f"GPT crossover output shape: {off.shape}")
+                return off
                 break
 
             except:
@@ -376,3 +383,6 @@ class GPT_interface(GPT):
 
     def __init__(self, **kwargs):
         super().__init__(n_new=1, **kwargs)
+        # 确保设置正确的父代和子代数量
+        self.n_parents = 10  # 与NSGA3_LLM中的设置一致
+        self.n_offsprings = 2  # 每次交叉产生2个子代
